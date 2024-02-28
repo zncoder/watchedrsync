@@ -49,11 +49,21 @@ func watchLoop(watcher *fsnotify.Watcher) {
 			// TODO: handle remove, rename by rsync the whole dir
 			// TODO: handle create of dir
 			// TODO: ignore files
-			if ev.Op == fsnotify.Create || ev.Op == fsnotify.Write {
+			if (ev.Op == fsnotify.Create || ev.Op == fsnotify.Write) && !ignoreFile(ev.Name) {
 				processEvent(ev.Name)
 			}
 		}
 	}
+}
+
+func ignoreFile(filename string) bool {
+	base := filepath.Base(filename)
+	if strings.HasPrefix(base, ".") ||
+		strings.HasSuffix(base, "~") ||
+		mygo.IsSymlink(filename) {
+		return false
+	}
+	return true
 }
 
 func rsync(src, dst string) {
