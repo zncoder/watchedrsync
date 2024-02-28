@@ -58,7 +58,7 @@ func watchLoop(watcher *fsnotify.Watcher) {
 
 func rsync(src, dst string) {
 	check.L("rsync", "src", src, "dst", dst)
-	mygo.NewCmd("rsync", "-a", "-e", "ssh", "--delete", src, dst).Run()
+	mygo.NewCmd("rsync", "-a", "-e", "ssh", src, dst).Run()
 }
 
 func processEvent(filename string) {
