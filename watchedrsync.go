@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/fsnotify/fsnotify"
@@ -15,10 +16,12 @@ import (
 var (
 	baseDir    string
 	remotePath string
+	verbose    bool
 )
 
 func main() {
 	flag.StringVar(&remotePath, "r", "", "remote path in rsync format, e.g. foo:bar")
+	flag.BoolVar(&verbose, "v", false, "verbose")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s <local_dir>\n", os.Args[0])
 		flag.PrintDefaults()
@@ -46,22 +49,39 @@ func watchLoop(watcher *fsnotify.Watcher) {
 		select {
 		case ev, ok := <-watcher.Events:
 			check.T(ok).F("recv watcher event")
-			// TODO: process async
 			// TODO: handle remove, rename by rsync the whole dir
 			// TODO: handle create of dir
-			// TODO: ignore files
-			if (ev.Op&ops) != 0 && !ignoreFile(ev.Name) {
+			if verbose {
+				check.L("recv", "event", ev)
+			}
+			if (ev.Op & ops) == 0 {
+				continue
+			}
+			ignored := ignoreFile(ev.Name)
+			if !ignored {
 				processEvent(ev.Name)
+			} else if verbose {
+				check.L("ignore", "filename", ev.Name)
 			}
 		}
 	}
 }
 
+var ignoredExts = []string{".o", ".so", ".exe", ".dylib", ".test", ".out"}
+
 func ignoreFile(filename string) bool {
 	base := filepath.Base(filename)
-	if strings.HasPrefix(base, ".") ||
-		strings.HasSuffix(base, "~") ||
-		mygo.IsSymlink(filename) {
+	if strings.HasPrefix(base, ".") || strings.HasSuffix(base, "~") {
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(filename))
+	if slices.Contains(ignoredExts, ext) {
+		return true
+	}
+	if mygo.IsSymlink(filename) {
+		return true
+	}
+	if !mygo.GuessUTF8File(filename) {
 		return true
 	}
 	return false
