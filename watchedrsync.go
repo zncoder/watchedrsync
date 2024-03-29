@@ -41,6 +41,7 @@ func main() {
 }
 
 func watchLoop(watcher *fsnotify.Watcher) {
+	const ops = fsnotify.Create | fsnotify.Write
 	for {
 		select {
 		case ev, ok := <-watcher.Events:
@@ -49,7 +50,7 @@ func watchLoop(watcher *fsnotify.Watcher) {
 			// TODO: handle remove, rename by rsync the whole dir
 			// TODO: handle create of dir
 			// TODO: ignore files
-			if (ev.Op == fsnotify.Create || ev.Op == fsnotify.Write) && !ignoreFile(ev.Name) {
+			if (ev.Op&ops) != 0 && !ignoreFile(ev.Name) {
 				processEvent(ev.Name)
 			}
 		}
@@ -61,9 +62,9 @@ func ignoreFile(filename string) bool {
 	if strings.HasPrefix(base, ".") ||
 		strings.HasSuffix(base, "~") ||
 		mygo.IsSymlink(filename) {
-		return false
+		return true
 	}
-	return true
+	return false
 }
 
 func rsync(src, dst string) {
