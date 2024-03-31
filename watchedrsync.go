@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,12 +17,13 @@ import (
 var (
 	baseDir    string
 	remotePath string
+	shallow    bool
 	verbose    bool
 )
 
 func main() {
 	flag.StringVar(&remotePath, "r", "", "remote path in rsync format, e.g. foo:bar")
-	flag.BoolVar(&verbose, "v", false, "verbose")
+	flag.BoolVar(&shallow, "s", false, "watch just local_dir, not subdirs")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s <local_dir>\n", os.Args[0])
 		flag.PrintDefaults()
@@ -30,17 +32,36 @@ func main() {
 	check.T(remotePath != "").F("no remotedir")
 	check.T(flag.NArg() == 1).F("no dir")
 	baseDir = flag.Arg(0)
-	baseDir = check.V(filepath.Abs(baseDir)).F("invalid dir", "dir", baseDir) + "/"
+	baseDir = check.V(filepath.Abs(baseDir)).F("invalid dir", "dir", baseDir)
+	check.T(mygo.IsDir(baseDir)).F("not a dir", "dir", baseDir)
+	baseDir += "/" // for rsync
 	remotePath = filepath.Clean(remotePath) + "/"
 	check.L("sync to remote", "dir", remotePath)
 
 	watcher := check.V(fsnotify.NewWatcher()).F("NewWatcher")
-	check.E(watcher.Add(baseDir))
-	check.L("watching", "dir", baseDir)
+	watchDir(watcher, baseDir, !shallow)
 
 	rsync(baseDir, remotePath)
 
 	watchLoop(watcher)
+}
+
+func watchDir(watcher *fsnotify.Watcher, dir string, recursive bool) {
+	check.L("watching", "basedir", dir)
+	check.E(watcher.Add(dir)).F("watcher.add")
+	if !recursive {
+		return
+	}
+
+	check.E(fs.WalkDir(os.DirFS(dir), ".", func(path string, de fs.DirEntry, err error) error {
+		check.E(err).F("walkdir", "path", path)
+		if path != "." && de.IsDir() && de.Type()&fs.ModeSymlink == 0 {
+			path = filepath.Join(dir, path)
+			check.L("watching", "dir", path)
+			check.E(watcher.Add(path)).F("watcher.add")
+		}
+		return nil
+	})).F("walkdir")
 }
 
 func watchLoop(watcher *fsnotify.Watcher) {
