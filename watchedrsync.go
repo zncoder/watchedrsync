@@ -22,20 +22,22 @@ var (
 )
 
 func main() {
-	flag.StringVar(&remotePath, "r", "", "remote path in rsync format, e.g. foo:bar")
+	flag.StringVar(&remotePath, "r", "", "remote parent dir in rsync format, host:dir")
 	flag.BoolVar(&shallow, "s", false, "watch just local_dir, not subdirs")
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s <local_dir>\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s local_dir\n", os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
-	check.T(remotePath != "").F("no remotedir")
-	check.T(flag.NArg() == 1).F("no dir")
+	check.T(remotePath != "").F("no remote dir")
+	check.T(flag.NArg() == 1).F("no local dir")
+
 	baseDir = flag.Arg(0)
 	baseDir = check.V(filepath.Abs(baseDir)).F("invalid dir", "dir", baseDir)
 	check.T(mygo.IsDir(baseDir)).F("not a dir", "dir", baseDir)
+	dir := filepath.Base(baseDir)
 	baseDir += "/" // for rsync
-	remotePath = filepath.Clean(remotePath) + "/"
+	remotePath = filepath.Join(filepath.Clean(remotePath), dir) + "/"
 	check.L("sync to remote", "dir", remotePath)
 
 	watcher := check.V(fsnotify.NewWatcher()).F("NewWatcher")
