@@ -24,6 +24,7 @@ var (
 func main() {
 	flag.StringVar(&remotePath, "r", "", "remote parent dir in rsync format, host:dir")
 	flag.BoolVar(&shallow, "s", false, "watch just local_dir, not subdirs")
+	flag.BoolVar(&verbose, "v", false, "verbose")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s local_dir\n", os.Args[0])
 		flag.PrintDefaults()
