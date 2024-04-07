@@ -31,7 +31,7 @@ func main() {
 	flag.BoolVar(&shallow, "s", false, "watch just local_dir, not subdirs")
 	flag.BoolVar(&guessText, "t", false, "guess file content is text")
 	flag.DurationVar(&eventDelayDuration, "d", 2*time.Second, "delay to batch processing events")
-	flag.BoolVar(&verbose, "v", false, "verbose")
+	flag.BoolVar(&verbose, "v", true, "verbose")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s local_dir\n", os.Args[0])
 		flag.PrintDefaults()
@@ -51,7 +51,9 @@ func main() {
 	watcher := check.V(fsnotify.NewBufferedWatcher(50)).F("NewWatcher")
 	watchDir(watcher, baseDir, !shallow)
 
+	start := time.Now()
 	rsync(baseDir, remotePath)
+	check.L("initial rsync done", "duration", since(start))
 
 	watchLoop(watcher)
 }
@@ -75,7 +77,11 @@ func watchDir(watcher *fsnotify.Watcher, dir string, recursive bool) {
 	})).F("walkdir")
 }
 
-const interestingOps = fsnotify.Create | fsnotify.Write
+func since(t time.Time) time.Duration {
+	return time.Now().Sub(t).Truncate(time.Millisecond)
+}
+
+const interestingOps = fsnotify.Create | fsnotify.Write | fsnotify.Remove
 
 func watchLoop(watcher *fsnotify.Watcher) {
 	for {
@@ -118,22 +124,37 @@ func collectEvents(watcher *fsnotify.Watcher, ev fsnotify.Event) []fsnotify.Even
 }
 
 func processEvents(evs []fsnotify.Event) {
-	files := make(map[string]struct{})
-	for _, ev := range evs {
-		// TODO: handle remove, rename by rsync the whole dir
-		// TODO: handle create of dir
-		ignored := ignoreFile(ev.Name)
-		if !ignored {
-			check.L("add", "filename", ev.Name)
-			files[ev.Name] = struct{}{}
-		} else if verbose {
-			check.L("ignore", "filename", ev.Name)
-		}
+	type FileToSync struct {
+		Name     string
+		Order    int
+		IsRemove bool
 	}
+	// filename => FileToSync
+	// only the last event matters
+	// keep the event order
+	filesToSyncMap := make(map[string]*FileToSync)
+	for i, ev := range evs {
+		if ignoreFile(ev.Name) {
+			if verbose {
+				check.L("ignore", "file", ev.Name)
+			}
+			continue
+		}
 
-	check.L("processevents", "num_events", len(evs), "num_files", len(files))
-	for fn := range files {
-		processFile(fn)
+		isrm := (ev.Op & fsnotify.Remove) != 0
+		check.L("add", "file", ev.Name, "evop", ev.Op, "isrm", isrm)
+		filesToSyncMap[ev.Name] = &FileToSync{Name: ev.Name, Order: i, IsRemove: isrm}
+	}
+	var filesToSync []*FileToSync
+	for _, fts := range filesToSyncMap {
+		filesToSync = append(filesToSync, fts)
+	}
+	slices.SortFunc(filesToSync, func(a, b *FileToSync) int { return a.Order - b.Order })
+
+	// TODO: parallel
+	check.L("processevents", "num_events", len(evs), "num_files", len(filesToSync))
+	for _, fts := range filesToSync {
+		processFile(fts.Name, fts.IsRemove)
 	}
 }
 
@@ -147,7 +168,7 @@ func ignoreFile(filename string) bool {
 	if slices.Contains(ignoredExts, ext) {
 		return true
 	}
-	if mygo.IsSymlink(filename) {
+	if mode := mygo.FileMode(filename); mode&(os.ModeDir|os.ModeSymlink) != 0 {
 		return true
 	}
 	if guessText && !mygo.GuessUTF8File(filename) {
@@ -161,8 +182,19 @@ func rsync(src, dst string) {
 	mygo.NewCmd("rsync", "-a", "-e", "ssh", src, dst).Run()
 }
 
-func processFile(filename string) {
+func processFile(filename string, isRemove bool) {
 	p := strings.TrimPrefix(filename, baseDir)
 	dst := fmt.Sprintf("%s%s", remotePath, p)
-	rsync(filename, dst)
+	if isRemove {
+		removeRemoteFile(dst)
+	} else {
+		rsync(filename, dst)
+	}
+}
+
+func removeRemoteFile(rsyncFilename string) {
+	ss := strings.SplitN(rsyncFilename, ":", 2)
+	check.T(len(ss) == 2).F("malformed rsync filename to remove", "file", rsyncFilename)
+	check.L("ssh rm", "host", ss[0], "file", ss[1])
+	mygo.NewCmd("ssh", ss[0], "rm", ss[1]).Run()
 }

@@ -8,5 +8,7 @@ github.com/zncoder/mygo v0.0.0-20240329054151-e0dd2059bbb5 h1:hp85LmDiBluLsPP7qM
 github.com/zncoder/mygo v0.0.0-20240329054151-e0dd2059bbb5/go.mod h1:J7Oj8MFgjGDuTw7aEn2MMKCcGKMqE+DYOX1Z0xYC7yg=
 github.com/zncoder/mygo v0.0.0-20240331033641-0598c1fa7936 h1:8Efr5GFZlI0wHNaz/2ZXVSPtwVIl6aLfprcxl1Ct+Jc=
 github.com/zncoder/mygo v0.0.0-20240331033641-0598c1fa7936/go.mod h1:J7Oj8MFgjGDuTw7aEn2MMKCcGKMqE+DYOX1Z0xYC7yg=
+github.com/zncoder/mygo v0.0.0-20240407175831-399a8b8b9444 h1:YVgpTpBAxP/KMUxo3ybgxTlWaA2rTFswz1XTrfR9g8I=
+github.com/zncoder/mygo v0.0.0-20240407175831-399a8b8b9444/go.mod h1:J7Oj8MFgjGDuTw7aEn2MMKCcGKMqE+DYOX1Z0xYC7yg=
 golang.org/x/sys v0.4.0 h1:Zr2JFtRQNX3BCZ8YtxRE9hNJYC8J6I1MVbMg6owUp18=
 golang.org/x/sys v0.4.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
