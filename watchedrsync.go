@@ -4,10 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/zncoder/check"
@@ -15,17 +17,20 @@ import (
 )
 
 var (
-	baseDir    string
-	remotePath string
-	shallow    bool
-	guessText  bool
-	verbose    bool
+	baseDir            string
+	remotePath         string
+	shallow            bool
+	guessText          bool
+	eventDelayDuration time.Duration
+	verbose            bool
 )
 
 func main() {
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	flag.StringVar(&remotePath, "r", "", "remote parent dir in rsync format, host:dir")
 	flag.BoolVar(&shallow, "s", false, "watch just local_dir, not subdirs")
 	flag.BoolVar(&guessText, "t", false, "guess file content is text")
+	flag.DurationVar(&eventDelayDuration, "d", 2*time.Second, "delay to batch processing events")
 	flag.BoolVar(&verbose, "v", false, "verbose")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s local_dir\n", os.Args[0])
@@ -70,27 +75,58 @@ func watchDir(watcher *fsnotify.Watcher, dir string, recursive bool) {
 	})).F("walkdir")
 }
 
+const interestingOps = fsnotify.Create | fsnotify.Write
+
 func watchLoop(watcher *fsnotify.Watcher) {
-	const ops = fsnotify.Create | fsnotify.Write
 	for {
 		select {
-		// TODO: drain the event chan and then rsync
 		case ev, ok := <-watcher.Events:
 			check.T(ok).F("recv watcher event")
-			// TODO: handle remove, rename by rsync the whole dir
-			// TODO: handle create of dir
 			if verbose {
 				check.L("recv", "event", ev)
 			}
-			if (ev.Op & ops) == 0 {
-				continue
+			evs := collectEvents(watcher, ev)
+			processEvents(evs)
+		}
+	}
+}
+
+func collectEvents(watcher *fsnotify.Watcher, ev fsnotify.Event) []fsnotify.Event {
+	var evs []fsnotify.Event
+	if (ev.Op & interestingOps) != 0 {
+		evs = append(evs, ev)
+	}
+
+	if eventDelayDuration > 0 {
+		time.Sleep(eventDelayDuration)
+	}
+
+	for {
+		select {
+		case ev, ok := <-watcher.Events:
+			check.T(ok).F("recv watcher event")
+			if verbose {
+				check.L("recv", "event", ev)
 			}
-			ignored := ignoreFile(ev.Name)
-			if !ignored {
-				processEvent(ev.Name)
-			} else if verbose {
-				check.L("ignore", "filename", ev.Name)
+			if (ev.Op & interestingOps) != 0 {
+				evs = append(evs, ev)
 			}
+		default:
+			return evs
+		}
+	}
+}
+
+func processEvents(evs []fsnotify.Event) {
+	check.L("processevents", "num", len(evs))
+	for _, ev := range evs {
+		// TODO: handle remove, rename by rsync the whole dir
+		// TODO: handle create of dir
+		ignored := ignoreFile(ev.Name)
+		if !ignored {
+			processEvent(ev.Name)
+		} else if verbose {
+			check.L("ignore", "filename", ev.Name)
 		}
 	}
 }
