@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -22,6 +23,7 @@ var (
 	shallow            bool
 	guessText          bool
 	eventDelayDuration time.Duration
+	parallel           int
 	verbose            bool
 )
 
@@ -30,6 +32,7 @@ func main() {
 	flag.StringVar(&remotePath, "r", "", "remote parent dir in rsync format, host:dir")
 	flag.BoolVar(&shallow, "s", false, "watch just local_dir, not subdirs")
 	flag.BoolVar(&guessText, "t", false, "guess file content is text")
+	flag.IntVar(&parallel, "p", 10, "parallelism")
 	flag.DurationVar(&eventDelayDuration, "d", 2*time.Second, "delay to batch processing events")
 	flag.BoolVar(&verbose, "v", true, "verbose")
 	flag.Usage = func() {
@@ -88,11 +91,11 @@ func watchLoop(watcher *fsnotify.Watcher) {
 		select {
 		case ev, ok := <-watcher.Events:
 			check.T(ok).F("recv watcher event")
-			if verbose {
-				check.L("recv", "event", ev)
-			}
+			start := time.Now()
+			check.L("start cycle", "event", ev)
 			evs := collectEvents(watcher, ev)
 			processEvents(evs)
+			check.L("finish cycle", "duration", since(start))
 		}
 	}
 }
@@ -123,12 +126,13 @@ func collectEvents(watcher *fsnotify.Watcher, ev fsnotify.Event) []fsnotify.Even
 	}
 }
 
+type FileToSync struct {
+	Name     string
+	Order    int
+	IsRemove bool
+}
+
 func processEvents(evs []fsnotify.Event) {
-	type FileToSync struct {
-		Name     string
-		Order    int
-		IsRemove bool
-	}
 	// filename => FileToSync
 	// only the last event matters
 	// keep the event order
@@ -142,20 +146,41 @@ func processEvents(evs []fsnotify.Event) {
 		}
 
 		isrm := (ev.Op & fsnotify.Remove) != 0
-		check.L("add", "file", ev.Name, "evop", ev.Op, "isrm", isrm)
+		check.L("add", "file", ev.Name, "evop", ev.Op, "rm", isrm)
 		filesToSyncMap[ev.Name] = &FileToSync{Name: ev.Name, Order: i, IsRemove: isrm}
 	}
 	var filesToSync []*FileToSync
 	for _, fts := range filesToSyncMap {
 		filesToSync = append(filesToSync, fts)
 	}
+	// no need to sort
 	slices.SortFunc(filesToSync, func(a, b *FileToSync) int { return a.Order - b.Order })
 
-	// TODO: parallel
 	check.L("processevents", "num_events", len(evs), "num_files", len(filesToSync))
-	for _, fts := range filesToSync {
-		processFile(fts.Name, fts.IsRemove)
+
+	processFiles(filesToSync)
+}
+
+func processFiles(filesToSync []*FileToSync) {
+	var done sync.WaitGroup
+	done.Add(parallel)
+
+	ch := make(chan *FileToSync, parallel)
+	for i := 0; i < parallel; i++ {
+		go func() {
+			defer done.Done()
+
+			for fts := range ch {
+				processFile(fts.Name, fts.IsRemove)
+			}
+		}()
 	}
+
+	for _, fts := range filesToSync {
+		ch <- fts
+	}
+	close(ch)
+	done.Wait()
 }
 
 var ignoredExts = []string{".o", ".so", ".exe", ".dylib", ".test", ".out"}
