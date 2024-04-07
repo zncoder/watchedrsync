@@ -18,12 +18,14 @@ var (
 	baseDir    string
 	remotePath string
 	shallow    bool
+	guessText  bool
 	verbose    bool
 )
 
 func main() {
 	flag.StringVar(&remotePath, "r", "", "remote parent dir in rsync format, host:dir")
 	flag.BoolVar(&shallow, "s", false, "watch just local_dir, not subdirs")
+	flag.BoolVar(&guessText, "t", false, "guess file content is text")
 	flag.BoolVar(&verbose, "v", false, "verbose")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s local_dir\n", os.Args[0])
@@ -58,7 +60,8 @@ func watchDir(watcher *fsnotify.Watcher, dir string, recursive bool) {
 
 	check.E(fs.WalkDir(os.DirFS(dir), ".", func(path string, de fs.DirEntry, err error) error {
 		check.E(err).F("walkdir", "path", path)
-		if path != "." && de.IsDir() && de.Type()&fs.ModeSymlink == 0 {
+		if de.IsDir() && de.Type()&fs.ModeSymlink == 0 &&
+			!strings.HasPrefix(path, ".") && !strings.Contains(path, "/.") {
 			path = filepath.Join(dir, path)
 			check.L("watching", "dir", path)
 			check.E(watcher.Add(path)).F("watcher.add")
@@ -71,6 +74,7 @@ func watchLoop(watcher *fsnotify.Watcher) {
 	const ops = fsnotify.Create | fsnotify.Write
 	for {
 		select {
+		// TODO: drain the event chan and then rsync
 		case ev, ok := <-watcher.Events:
 			check.T(ok).F("recv watcher event")
 			// TODO: handle remove, rename by rsync the whole dir
@@ -94,8 +98,7 @@ func watchLoop(watcher *fsnotify.Watcher) {
 var ignoredExts = []string{".o", ".so", ".exe", ".dylib", ".test", ".out"}
 
 func ignoreFile(filename string) bool {
-	base := filepath.Base(filename)
-	if strings.HasPrefix(base, ".") || strings.HasSuffix(base, "~") {
+	if strings.Contains(filename, "/.") || strings.HasSuffix(filename, "~") {
 		return true
 	}
 	ext := strings.ToLower(filepath.Ext(filename))
@@ -105,7 +108,7 @@ func ignoreFile(filename string) bool {
 	if mygo.IsSymlink(filename) {
 		return true
 	}
-	if !mygo.GuessUTF8File(filename) {
+	if guessText && !mygo.GuessUTF8File(filename) {
 		return true
 	}
 	return false
