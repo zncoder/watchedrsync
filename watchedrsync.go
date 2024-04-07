@@ -118,16 +118,22 @@ func collectEvents(watcher *fsnotify.Watcher, ev fsnotify.Event) []fsnotify.Even
 }
 
 func processEvents(evs []fsnotify.Event) {
-	check.L("processevents", "num", len(evs))
+	files := make(map[string]struct{})
 	for _, ev := range evs {
 		// TODO: handle remove, rename by rsync the whole dir
 		// TODO: handle create of dir
 		ignored := ignoreFile(ev.Name)
 		if !ignored {
-			processEvent(ev.Name)
+			check.L("add", "filename", ev.Name)
+			files[ev.Name] = struct{}{}
 		} else if verbose {
 			check.L("ignore", "filename", ev.Name)
 		}
+	}
+
+	check.L("processevents", "num_events", len(evs), "num_files", len(files))
+	for fn := range files {
+		processFile(fn)
 	}
 }
 
@@ -155,7 +161,7 @@ func rsync(src, dst string) {
 	mygo.NewCmd("rsync", "-a", "-e", "ssh", src, dst).Run()
 }
 
-func processEvent(filename string) {
+func processFile(filename string) {
 	p := strings.TrimPrefix(filename, baseDir)
 	dst := fmt.Sprintf("%s%s", remotePath, p)
 	rsync(filename, dst)
