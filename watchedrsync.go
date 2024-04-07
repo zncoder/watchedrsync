@@ -48,7 +48,7 @@ func main() {
 	remotePath = filepath.Join(filepath.Clean(remotePath), dir) + "/"
 	check.L("sync to remote", "dir", remotePath)
 
-	watcher := check.V(fsnotify.NewWatcher()).F("NewWatcher")
+	watcher := check.V(fsnotify.NewBufferedWatcher(50)).F("NewWatcher")
 	watchDir(watcher, baseDir, !shallow)
 
 	rsync(baseDir, remotePath)
