@@ -132,11 +132,13 @@ type FileToSync struct {
 	IsRemove bool
 }
 
+// make it global to support retry
+var filesToSyncMap = make(map[string]*FileToSync)
+
 func processEvents(evs []fsnotify.Event) {
 	// filename => FileToSync
 	// only the last event matters
 	// keep the event order
-	filesToSyncMap := make(map[string]*FileToSync)
 	for i, ev := range evs {
 		if ignoreFile(ev.Name) {
 			if verbose {
@@ -149,6 +151,7 @@ func processEvents(evs []fsnotify.Event) {
 		check.L("add", "file", ev.Name, "evop", ev.Op, "rm", isrm)
 		filesToSyncMap[ev.Name] = &FileToSync{Name: ev.Name, Order: i, IsRemove: isrm}
 	}
+
 	var filesToSync []*FileToSync
 	for _, fts := range filesToSyncMap {
 		filesToSync = append(filesToSync, fts)
@@ -158,20 +161,30 @@ func processEvents(evs []fsnotify.Event) {
 
 	check.L("processevents", "num_events", len(evs), "num_files", len(filesToSync))
 
-	processFiles(filesToSync)
+	if err := processFiles(filesToSync); err != nil {
+		check.L("processfiles failed", "err", err)
+		return
+	}
+	filesToSyncMap = make(map[string]*FileToSync)
 }
 
-func processFiles(filesToSync []*FileToSync) {
+func processFiles(filesToSync []*FileToSync) error {
 	var done sync.WaitGroup
 	done.Add(parallel)
 
+	errCh := make(chan error, 1)
 	ch := make(chan *FileToSync, parallel)
 	for i := 0; i < parallel; i++ {
 		go func() {
 			defer done.Done()
 
 			for fts := range ch {
-				processFile(fts.Name, fts.IsRemove)
+				if err := processFile(fts.Name, fts.IsRemove); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+				}
 			}
 		}()
 	}
@@ -181,6 +194,13 @@ func processFiles(filesToSync []*FileToSync) {
 	}
 	close(ch)
 	done.Wait()
+
+	select {
+	case err := <-errCh:
+		return err
+	default:
+		return nil
+	}
 }
 
 var ignoredExts = []string{".o", ".so", ".exe", ".dylib", ".test", ".out"}
@@ -202,24 +222,25 @@ func ignoreFile(filename string) bool {
 	return false
 }
 
-func rsync(src, dst string) {
+func rsync(src, dst string) error {
 	check.L("rsync", "src", src, "dst", dst)
-	mygo.NewCmd("rsync", "-a", "-e", "ssh", src, dst).Run()
+	return mygo.NewCmd("rsync", "-a", "-e", "ssh", src, dst).C.Run()
 }
 
-func processFile(filename string, isRemove bool) {
+func processFile(filename string, isRemove bool) (err error) {
 	p := strings.TrimPrefix(filename, baseDir)
 	dst := fmt.Sprintf("%s%s", remotePath, p)
 	if isRemove {
-		removeRemoteFile(dst)
+		err = removeRemoteFile(dst)
 	} else {
-		rsync(filename, dst)
+		err = rsync(filename, dst)
 	}
+	return err
 }
 
-func removeRemoteFile(rsyncFilename string) {
+func removeRemoteFile(rsyncFilename string) error {
 	ss := strings.SplitN(rsyncFilename, ":", 2)
 	check.T(len(ss) == 2).F("malformed rsync filename to remove", "file", rsyncFilename)
 	check.L("ssh rm", "host", ss[0], "file", ss[1])
-	mygo.NewCmd("ssh", ss[0], "rm", ss[1]).Run()
+	return mygo.NewCmd("ssh", ss[0], "rm", ss[1]).C.Run()
 }
