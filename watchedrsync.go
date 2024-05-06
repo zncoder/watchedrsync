@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,56 +19,133 @@ import (
 )
 
 var (
-	baseDir            string
-	remotePath         string
-	guessText          bool
-	eventDelayDuration time.Duration
-	parallel           int
-	verbose            bool
+	guessText          = flag.Bool("t", false, "guess file content is text")
+	parallel           = flag.Int("p", 10, "parallelism")
+	eventDelayDuration = flag.Duration("d", 2*time.Second, "delay to batch processing events")
+	sockAddr           = flag.String("s", os.ExpandEnv("$HOME/.cache/watchedrsync.sock"), "unix socket addr")
+	verbose            = flag.Bool("v", true, "verbose")
 )
+
+var watchedDirs = make(map[string]string)
+
+func watchDir(watcher *fsnotify.Watcher, local, remote string) error {
+	check.T(strings.HasSuffix(local, "/")).F("local dir must end with /", "local", local)
+	check.T(strings.HasSuffix(remote, "/")).F("remote dir must end with /", "remote", remote)
+
+	for ld, rd := range watchedDirs {
+		if local == ld || remote == rd {
+			return fmt.Errorf("already watching %q => %q", ld, rd)
+		}
+	}
+
+	check.L("watching", "local", local, "remote", remote)
+	check.E(watcher.Add(local)).F("watcher.add", "local", local)
+	watchedDirs[local] = remote
+	return nil
+}
 
 type Op struct{}
 
 func (Op) Daemon() {
-	flag.StringVar(&remotePath, "r", "", "remote dir in rsync format, host:dir")
-	flag.BoolVar(&guessText, "t", false, "guess file content is text")
-	flag.IntVar(&parallel, "p", 10, "parallelism")
-	flag.DurationVar(&eventDelayDuration, "d", 2*time.Second, "delay to batch processing events")
-	flag.BoolVar(&verbose, "v", true, "verbose")
 	mygo.ParseFlag("local-dir")
 
-	check.T(remotePath != "").F("no remote dir")
-	remotePath = filepath.Clean(remotePath) + "/"
-	check.T(flag.NArg() == 1).F("no local dir")
-	if eventDelayDuration <= 0 {
-		check.L("fix -d to 0.05s")
-		eventDelayDuration = 50 * time.Millisecond
-	}
-
-	baseDir = flag.Arg(0)
-	baseDir = check.V(filepath.Abs(baseDir)).F("invalid dir", "dir", baseDir)
-	check.T(mygo.IsDir(baseDir)).F("not a dir", "dir", baseDir)
-	baseDir += "/"
-	check.L("sync dir", "from", baseDir, "to", remotePath)
+	os.Remove(*sockAddr)
+	check.L("listening", "sock", *sockAddr)
+	lr := check.V(net.Listen("unix", *sockAddr)).F("listen")
+	defer lr.Close()
 
 	watcher := check.V(fsnotify.NewBufferedWatcher(50)).F("NewWatcher")
-	watchDir(watcher, baseDir)
+	go watchLoop(watcher)
 
-	start := time.Now()
-	rsync(baseDir, remotePath)
-	check.L("initial rsync done", "duration", since(start))
+	buf := make([]byte, 1024*1024)
+	for {
+		conn, err := lr.Accept()
+		if err != nil {
+			check.L("accept failed", "err", err)
+			continue
+		}
+		handleConn(conn, watcher, buf)
+	}
+}
 
-	watchLoop(watcher)
+type WatchedDir struct {
+	LocalDir  string // dir/
+	RemoteDir string // host:dir/
+}
+
+func NewWatchedDir(buf []byte) (wd WatchedDir, err error) {
+	err = json.Unmarshal(buf, &wd)
+	if err != nil {
+		return wd, fmt.Errorf("unmarshal err:%w", err)
+	}
+
+	dir, err := filepath.Abs(wd.LocalDir)
+	if err != nil {
+		return wd, fmt.Errorf("abs localdir:%q err:%w", wd.LocalDir, err)
+	}
+	wd.LocalDir = dir + "/"
+	if !mygo.IsDir(wd.LocalDir) {
+		return wd, fmt.Errorf("localdir:%q is not a dir", wd.LocalDir)
+	}
+	wd.RemoteDir = filepath.Clean(wd.RemoteDir) + "/"
+	return wd, nil
+}
+
+type JsonResponse struct {
+	Ok  string `json:"ok",omitempty`
+	Err string `json:"err",omitempty`
+}
+
+func handleConn(conn net.Conn, watcher *fsnotify.Watcher, buf []byte) {
+	defer conn.Close()
+
+	var err error
+	defer func() {
+		if err != nil {
+			jr := JsonResponse{Err: err.Error()}
+			json.NewEncoder(conn).Encode(&jr)
+		}
+	}()
+
+	n, err := conn.Read(buf)
+	if err != nil {
+		err = fmt.Errorf("read input err:%w", err)
+		return
+	}
+	wd, err := NewWatchedDir(buf[:n])
+	if err != nil {
+		return
+	}
+	err = watchDir(watcher, wd.LocalDir, wd.RemoteDir)
+	if err != nil {
+		return
+	}
+	jr := JsonResponse{Ok: fmt.Sprintf("watching %q => %q", wd.LocalDir, wd.RemoteDir)}
+	json.NewEncoder(conn).Encode(&jr)
+}
+
+func (Op) Add() {
+	mygo.ParseFlag("local remote")
+	check.T(flag.NArg() == 2).F("need local and remote dir")
+	wd := WatchedDir{LocalDir: flag.Arg(0), RemoteDir: flag.Arg(1)}
+
+	conn := check.V(net.Dial("unix", *sockAddr)).F("dial", "sock", *sockAddr)
+	defer conn.Close()
+
+	check.E(json.NewEncoder(conn).Encode(&wd)).F("write request", "wd", wd)
+	var jr JsonResponse
+	check.E(json.NewDecoder(conn).Decode(&jr)).F("read response")
+	check.T(jr.Err == "").F("add failed", "err", jr.Err)
+	check.L(jr.Ok)
+}
+
+func (Op) RM_Remove() {
+
 }
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	mygo.RunOpMapCmd[Op]()
-}
-
-func watchDir(watcher *fsnotify.Watcher, dir string) {
-	check.L("watching", "basedir", dir)
-	check.E(watcher.Add(dir)).F("watcher.add")
 }
 
 func since(t time.Time) time.Duration {
@@ -95,13 +174,13 @@ func collectEvents(watcher *fsnotify.Watcher, ev fsnotify.Event) []fsnotify.Even
 		evs = append(evs, ev)
 	}
 
-	deadlineC := time.After(eventDelayDuration)
+	deadlineC := time.After(*eventDelayDuration)
 
 	for {
 		select {
 		case ev, ok := <-watcher.Events:
 			check.T(ok).F("recv watcher event")
-			if verbose {
+			if *verbose {
 				check.L("recv", "event", ev)
 			}
 			if (ev.Op & interestingOps) != 0 {
@@ -130,7 +209,7 @@ func processEvents(evs []fsnotify.Event) {
 	// keep the event order
 	for i, ev := range evs {
 		if ignoreFile(ev.Name) {
-			if verbose {
+			if *verbose {
 				check.L("ignore", "file", ev.Name)
 			}
 			continue
@@ -159,11 +238,11 @@ func processEvents(evs []fsnotify.Event) {
 
 func processFiles(filesToSync []*FileToSync) error {
 	var done sync.WaitGroup
-	done.Add(parallel)
+	done.Add(*parallel)
 
 	errCh := make(chan error, 1)
-	ch := make(chan *FileToSync, parallel)
-	for i := 0; i < parallel; i++ {
+	ch := make(chan *FileToSync, *parallel)
+	for i := 0; i < *parallel; i++ {
 		go func() {
 			defer done.Done()
 
@@ -205,7 +284,7 @@ func ignoreFile(filename string) bool {
 	if mode := mygo.FileMode(filename); mode&(os.ModeDir|os.ModeSymlink) != 0 {
 		return true
 	}
-	if guessText && !mygo.GuessUTF8File(filename) {
+	if *guessText && !mygo.GuessUTF8File(filename) {
 		return true
 	}
 	return false
@@ -217,7 +296,9 @@ func rsync(src, dst string) error {
 }
 
 func processFile(filename string, isRemove bool) (err error) {
-	p := strings.TrimPrefix(filename, baseDir)
+	dir, p := filepath.Split(filename)
+	remotePath := watchedDirs[dir]
+	check.T(remotePath != "").F("no remote dir", "dir", dir, "filename", p)
 	dst := fmt.Sprintf("%s%s", remotePath, p)
 	if isRemove {
 		err = removeRemoteFile(dst)
