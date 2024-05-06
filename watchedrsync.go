@@ -25,18 +25,16 @@ var (
 	verbose            bool
 )
 
-func main() {
-	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+type Op struct{}
+
+func (Op) Daemon() {
 	flag.StringVar(&remotePath, "r", "", "remote dir in rsync format, host:dir")
 	flag.BoolVar(&guessText, "t", false, "guess file content is text")
 	flag.IntVar(&parallel, "p", 10, "parallelism")
 	flag.DurationVar(&eventDelayDuration, "d", 2*time.Second, "delay to batch processing events")
 	flag.BoolVar(&verbose, "v", true, "verbose")
-	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s local_dir\n", os.Args[0])
-		flag.PrintDefaults()
-	}
-	flag.Parse()
+	mygo.ParseFlag("local-dir")
+
 	check.T(remotePath != "").F("no remote dir")
 	remotePath = filepath.Clean(remotePath) + "/"
 	check.T(flag.NArg() == 1).F("no local dir")
@@ -59,6 +57,11 @@ func main() {
 	check.L("initial rsync done", "duration", since(start))
 
 	watchLoop(watcher)
+}
+
+func main() {
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+	mygo.RunOpMapCmd[Op]()
 }
 
 func watchDir(watcher *fsnotify.Watcher, dir string) {
