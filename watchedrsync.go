@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -20,7 +19,6 @@ import (
 var (
 	baseDir            string
 	remotePath         string
-	shallow            bool
 	guessText          bool
 	eventDelayDuration time.Duration
 	parallel           int
@@ -30,7 +28,6 @@ var (
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	flag.StringVar(&remotePath, "r", "", "remote dir in rsync format, host:dir")
-	flag.BoolVar(&shallow, "s", false, "watch just local_dir, not subdirs")
 	flag.BoolVar(&guessText, "t", false, "guess file content is text")
 	flag.IntVar(&parallel, "p", 10, "parallelism")
 	flag.DurationVar(&eventDelayDuration, "d", 2*time.Second, "delay to batch processing events")
@@ -55,7 +52,7 @@ func main() {
 	check.L("sync dir", "from", baseDir, "to", remotePath)
 
 	watcher := check.V(fsnotify.NewBufferedWatcher(50)).F("NewWatcher")
-	watchDir(watcher, baseDir, !shallow)
+	watchDir(watcher, baseDir)
 
 	start := time.Now()
 	rsync(baseDir, remotePath)
@@ -64,24 +61,9 @@ func main() {
 	watchLoop(watcher)
 }
 
-func watchDir(watcher *fsnotify.Watcher, dir string, recursive bool) {
+func watchDir(watcher *fsnotify.Watcher, dir string) {
 	check.L("watching", "basedir", dir)
 	check.E(watcher.Add(dir)).F("watcher.add")
-	if !recursive {
-		return
-	}
-
-	check.E(fs.WalkDir(os.DirFS(dir), ".", func(path string, de fs.DirEntry, err error) error {
-		check.E(err).F("walkdir", "path", path)
-		// venv etc.
-		if de.IsDir() && de.Type()&fs.ModeSymlink == 0 &&
-			!strings.HasPrefix(path, ".") && !strings.Contains(path, "/.") {
-			path = filepath.Join(dir, path)
-			check.L("watching", "dir", path)
-			check.E(watcher.Add(path)).F("watcher.add")
-		}
-		return nil
-	})).F("walkdir")
 }
 
 func since(t time.Time) time.Duration {
