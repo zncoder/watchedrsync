@@ -29,7 +29,7 @@ var (
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
-	flag.StringVar(&remotePath, "r", "", "remote parent dir in rsync format, host:dir")
+	flag.StringVar(&remotePath, "r", "", "remote dir in rsync format, host:dir")
 	flag.BoolVar(&shallow, "s", false, "watch just local_dir, not subdirs")
 	flag.BoolVar(&guessText, "t", false, "guess file content is text")
 	flag.IntVar(&parallel, "p", 10, "parallelism")
@@ -41,15 +41,18 @@ func main() {
 	}
 	flag.Parse()
 	check.T(remotePath != "").F("no remote dir")
+	remotePath = filepath.Clean(remotePath) + "/"
 	check.T(flag.NArg() == 1).F("no local dir")
+	if eventDelayDuration <= 0 {
+		check.L("fix -d to 0.05s")
+		eventDelayDuration = 50 * time.Millisecond
+	}
 
 	baseDir = flag.Arg(0)
 	baseDir = check.V(filepath.Abs(baseDir)).F("invalid dir", "dir", baseDir)
 	check.T(mygo.IsDir(baseDir)).F("not a dir", "dir", baseDir)
-	dir := filepath.Base(baseDir)
-	baseDir += "/" // for rsync
-	remotePath = filepath.Join(filepath.Clean(remotePath), dir) + "/"
-	check.L("sync to remote", "dir", remotePath)
+	baseDir += "/"
+	check.L("sync dir", "from", baseDir, "to", remotePath)
 
 	watcher := check.V(fsnotify.NewBufferedWatcher(50)).F("NewWatcher")
 	watchDir(watcher, baseDir, !shallow)
@@ -70,6 +73,7 @@ func watchDir(watcher *fsnotify.Watcher, dir string, recursive bool) {
 
 	check.E(fs.WalkDir(os.DirFS(dir), ".", func(path string, de fs.DirEntry, err error) error {
 		check.E(err).F("walkdir", "path", path)
+		// venv etc.
 		if de.IsDir() && de.Type()&fs.ModeSymlink == 0 &&
 			!strings.HasPrefix(path, ".") && !strings.Contains(path, "/.") {
 			path = filepath.Join(dir, path)
@@ -106,9 +110,7 @@ func collectEvents(watcher *fsnotify.Watcher, ev fsnotify.Event) []fsnotify.Even
 		evs = append(evs, ev)
 	}
 
-	if eventDelayDuration > 0 {
-		time.Sleep(eventDelayDuration)
-	}
+	deadlineC := time.After(eventDelayDuration)
 
 	for {
 		select {
@@ -120,7 +122,9 @@ func collectEvents(watcher *fsnotify.Watcher, ev fsnotify.Event) []fsnotify.Even
 			if (ev.Op & interestingOps) != 0 {
 				evs = append(evs, ev)
 			}
-		default:
+		case <-time.After(500 * time.Millisecond):
+			return evs
+		case <-deadlineC:
 			return evs
 		}
 	}
