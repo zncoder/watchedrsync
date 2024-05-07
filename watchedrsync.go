@@ -54,18 +54,26 @@ type WatchDirArg struct {
 	RemoteDir string // host:dir/
 }
 
-func validateWatchDir(arg *WatchDirArg) (local, remote string, err error) {
-	local, remote = arg.LocalDir, arg.RemoteDir
+func validateLocalDir(local string) (string, error) {
 	if !filepath.IsAbs(local) {
-		return "", "", fmt.Errorf("localdir:%q is not abs", local)
+		return "", fmt.Errorf("localdir:%q is not abs", local)
 	}
-	local, err = filepath.Abs(local)
+	local, err := filepath.Abs(local)
 	if err != nil {
-		return "", "", fmt.Errorf("abs localdir:%q err:%w", local, err)
+		return "", fmt.Errorf("abs localdir:%q err:%w", local, err)
 	}
 	local += "/"
 	if !mygo.IsDir(local) {
-		return "", "", fmt.Errorf("localdir:%q is not a dir", local)
+		return "", fmt.Errorf("localdir:%q is not a dir", local)
+	}
+	return local, nil
+}
+
+func validateWatchDir(arg *WatchDirArg) (local, remote string, err error) {
+	local, remote = arg.LocalDir, arg.RemoteDir
+	local, err = validateLocalDir(local)
+	if err != nil {
+		return "", "", err
 	}
 	remote = filepath.Clean(remote) + "/"
 	return local, remote, nil
@@ -191,6 +199,10 @@ func (dm *Daemon) watchDir(local, remote string) error {
 }
 
 func (dm *Daemon) doRemove(local string) (string, error) {
+	local, err := validateLocalDir(local)
+	if err != nil {
+		return "", err
+	}
 	remote, ok := dm.watchedDirs[local]
 	if !ok {
 		return "", fmt.Errorf("dir:%q not found", local)
