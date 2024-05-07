@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -182,8 +183,12 @@ func (dm *Daemon) watchDir(local, remote string) error {
 	}
 
 	check.L("watching", "local", local, "remote", remote)
+	if err := rsyncMkdir(remote); err != nil {
+		return err
+	}
 	check.E(dm.watcher.Add(local)).F("watcher.add", "local", local)
 	dm.watchedDirs[local] = remote
+	dm.syncDir(local)
 	return nil
 }
 
@@ -320,27 +325,53 @@ func (dm *Daemon) ignoreFile(filename string) bool {
 	return false
 }
 
-func rsync(src, dst string) error {
+func rsyncFile(src, dst string) error {
 	check.L("rsync", "src", src, "dst", dst)
-	return mygo.NewCmd("rsync", "-a", "-e", "ssh", src, dst).C.Run()
+	return mygo.NewCmd("rsync", "-t", "-e", "ssh", src, dst).C.Run()
+}
+
+func (dm *Daemon) syncDir(local string) {
+	remote := dm.watchedDirs[local]
+	check.T(remote != "").F("no remote dir", "local", local)
+
+	localfs := os.DirFS(local)
+	des := check.V(fs.ReadDir(localfs, ".")).F("readdir", "dir", local)
+	for _, de := range des {
+		if de.Type().IsRegular() {
+			check.E(dm.processFile(filepath.Join(local, de.Name()), false)).F("syncdir", "local", local, "file", de.Name())
+		}
+	}
 }
 
 func (dm *Daemon) processFile(filename string, isRemove bool) (err error) {
 	dir, p := filepath.Split(filename)
-	remotePath := dm.watchedDirs[dir]
-	check.T(remotePath != "").F("no remote dir", "dir", dir, "filename", p)
-	dst := fmt.Sprintf("%s%s", remotePath, p)
+	remote := dm.watchedDirs[dir]
+	check.T(remote != "").F("no remote dir", "dir", dir, "filename", p)
+	dst := fmt.Sprintf("%s%s", remote, p)
 	if isRemove {
-		err = removeRemoteFile(dst)
+		err = rsyncRemoveFile(dst)
 	} else {
-		err = rsync(filename, dst)
+		err = rsyncFile(filename, dst)
 	}
 	return err
 }
 
-func removeRemoteFile(rsyncFilename string) error {
+func rsyncRemoveFile(rsyncFilename string) error {
 	ss := strings.SplitN(rsyncFilename, ":", 2)
 	check.T(len(ss) == 2).F("malformed rsync filename to remove", "file", rsyncFilename)
 	check.L("ssh rm", "host", ss[0], "file", ss[1])
-	return mygo.NewCmd("ssh", ss[0], "rm", ss[1]).C.Run()
+	if err := mygo.NewCmd("ssh", ss[0], "rm", ss[1]).C.Run(); err != nil {
+		return fmt.Errorf("ssh rm %q failed err:%w", rsyncFilename, err)
+	}
+	return nil
+}
+
+func rsyncMkdir(remote string) error {
+	ss := strings.SplitN(remote, ":", 2)
+	check.T(len(ss) == 2).F("malformed rsync filename to remove", "file", remote)
+	check.L("ssh mkdir", "host", ss[0], "file", ss[1])
+	if err := mygo.NewCmd("ssh", ss[0], "mkdir", "-p", ss[1]).C.Run(); err != nil {
+		return fmt.Errorf("ssh mkdir -p %q failed err:%w", remote, err)
+	}
+	return nil
 }
