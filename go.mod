@@ -4,7 +4,7 @@ go 1.21.7
 
 require (
 	github.com/fsnotify/fsnotify v1.7.0
-	github.com/zncoder/check v0.0.0-20240210205527-4e0f4a01e373
+	github.com/zncoder/check v0.0.0-20240507064945-2c9f36bee33c
 	github.com/zncoder/mygo v0.0.0-20240429031958-05daf5deccbb
 )
 

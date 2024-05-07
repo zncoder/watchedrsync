@@ -2,6 +2,8 @@ github.com/fsnotify/fsnotify v1.7.0 h1:8JEhPFa5W2WU7YfeZzPNqzMP6Lwt7L2715Ggo0nos
 github.com/fsnotify/fsnotify v1.7.0/go.mod h1:40Bi/Hjc2AVfZrqy+aj+yEI+/bRxZnMJyTJwOpGvigM=
 github.com/zncoder/check v0.0.0-20240210205527-4e0f4a01e373 h1:HGhDpeCRLikiYP5EXPMTRBQ2jee+vQF83j4xPnQAlbk=
 github.com/zncoder/check v0.0.0-20240210205527-4e0f4a01e373/go.mod h1:dee1ljbNl8dSrDgTCj3OOfAL5MbG2u4y28MtOlpzJUQ=
+github.com/zncoder/check v0.0.0-20240507064945-2c9f36bee33c h1:K8wG4sRNUc8KBXLyoT/swbLaYST36DXYm3rst/lAVRQ=
+github.com/zncoder/check v0.0.0-20240507064945-2c9f36bee33c/go.mod h1:dee1ljbNl8dSrDgTCj3OOfAL5MbG2u4y28MtOlpzJUQ=
 github.com/zncoder/mygo v0.0.0-20240218015325-5ed40863ea81 h1:Wxfj2bTgCnuDaWzMpVxkA9+kmIflGJ3bcEHVEKjhoxM=
 github.com/zncoder/mygo v0.0.0-20240218015325-5ed40863ea81/go.mod h1:J7Oj8MFgjGDuTw7aEn2MMKCcGKMqE+DYOX1Z0xYC7yg=
 github.com/zncoder/mygo v0.0.0-20240329054151-e0dd2059bbb5 h1:hp85LmDiBluLsPP7qMIBrZvr7RuGA5wXfqWzzL5PtnM=

@@ -133,12 +133,9 @@ type Daemon struct {
 func (dm *Daemon) RequestLoop(lr net.Listener) {
 	buf := make([]byte, 1024*1024)
 	for {
-		conn, err := lr.Accept()
-		if err != nil {
-			check.L("accept failed", "err", err)
-			continue
+		if conn, ok := check.V(lr.Accept()).L("accept"); ok {
+			dm.handleConn(conn, buf)
 		}
-		dm.handleConn(conn, buf)
 	}
 }
 
@@ -171,10 +168,7 @@ func (dm *Daemon) handleConn(conn net.Conn, buf []byte) {
 		return
 	}
 	jr := JsonResponse{Ok: fmt.Sprintf("watching %q => %q", wd.LocalDir, wd.RemoteDir)}
-	err = writeResult(conn, &jr)
-	if err != nil {
-		check.L("write response failed", "err", err)
-	}
+	check.E(writeResult(conn, &jr)).L("write response")
 }
 
 func (dm *Daemon) watchDir(local, remote string) error {
