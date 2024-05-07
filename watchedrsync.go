@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -72,46 +71,27 @@ func validateWatchDir(arg *WatchDirArg) (local, remote string, err error) {
 	return local, remote, nil
 }
 
-func readArg[T any](r io.Reader, buf []byte) (*T, error) {
-	if buf == nil {
-		buf = make([]byte, 64*1024)
-	}
-	var arg T
-	n, err := r.Read(buf)
-	if err != nil {
-		return nil, fmt.Errorf("read arg:%T err:%w", &arg, err)
-	}
-	err = json.Unmarshal(buf[:n], &arg)
-	if err != nil {
-		return nil, fmt.Errorf("unmarshal arg:%T err:%w", &arg, err)
-	}
-	return &arg, nil
-}
-
-func writeResult(w io.Writer, result any) error {
-	err := json.NewEncoder(w).Encode(result)
-	if err != nil {
-		return fmt.Errorf("write result:%T err:%w", result, err)
-	}
-	return nil
-}
-
 func (Op) Add() {
 	mygo.ParseFlag("local remote")
-	check.T(flag.NArg() == 2).F("need local and remote dir")
 	ld := check.V(filepath.Abs(flag.Arg(0))).F("abs", "local", flag.Arg(0))
-	wd := WatchDirArg{LocalDir: ld, RemoteDir: flag.Arg(1)}
+	call(&JsonArg{WatchDir: &WatchDirArg{LocalDir: ld, RemoteDir: flag.Arg(1)}})
+}
 
+func call(arg *JsonArg) {
 	conn := check.V(net.Dial("unix", *sockAddr)).F("dial", "sock", *sockAddr)
 	defer conn.Close()
 
-	check.E(writeResult(conn, wd)).F("write request", "wd", wd)
-	jr := check.V(readArg[JsonResponse](conn, nil)).F("read response")
-	check.T(jr.Err == "").F("add failed", "err", jr.Err)
+	check.E(json.NewEncoder(conn).Encode(arg)).F("write request", "arg", arg)
+	var jr JsonResult
+	check.E(json.NewDecoder(conn).Decode(&jr)).F("read response")
+	check.T(jr.Err == "").F("call failed", "err", jr.Err, "arg", arg)
 	check.L(jr.Ok)
 }
 
 func (Op) RM_Remove() {
+	mygo.ParseFlag("local")
+	ld := check.V(filepath.Abs(flag.Arg(0))).F("abs", "local", flag.Arg(0))
+	call(&JsonArg{RemoveDir: ld})
 }
 
 func main() {
@@ -143,7 +123,12 @@ func (dm *Daemon) RequestLoop(lr net.Listener) {
 	}
 }
 
-type JsonResponse struct {
+type JsonArg struct {
+	WatchDir  *WatchDirArg `json:"watchdir",omitempty`
+	RemoveDir string       `json:"removedir",omitempty`
+}
+
+type JsonResult struct {
 	Ok  string `json:"ok",omitempty`
 	Err string `json:"err",omitempty`
 }
@@ -151,29 +136,38 @@ type JsonResponse struct {
 func (dm *Daemon) handleConn(conn net.Conn, buf []byte) {
 	defer conn.Close()
 
+	var ok string
 	var err error
 	defer func() {
 		if err != nil {
-			jr := JsonResponse{Err: err.Error()}
-			json.NewEncoder(conn).Encode(&jr)
+			json.NewEncoder(conn).Encode(&JsonResult{Err: err.Error()})
+		} else {
+			json.NewEncoder(conn).Encode(&JsonResult{Ok: ok})
 		}
 	}()
 
-	wd, err := readArg[WatchDirArg](conn, buf)
-	if err != nil {
+	var ja JsonArg
+	if err = json.NewDecoder(conn).Decode(&ja); err != nil {
 		return
 	}
+	if ja.WatchDir != nil {
+		ok, err = dm.doWatch(ja.WatchDir)
+	}
+	if ja.RemoveDir != "" {
+		ok, err = dm.doRemove(ja.RemoveDir)
+	}
+}
+
+func (dm *Daemon) doWatch(wd *WatchDirArg) (string, error) {
 	local, remote, err := validateWatchDir(wd)
 	if err != nil {
-		return
+		return "", err
 	}
 
-	err = dm.watchDir(local, remote)
-	if err != nil {
-		return
+	if err = dm.watchDir(local, remote); err != nil {
+		return "", err
 	}
-	jr := JsonResponse{Ok: fmt.Sprintf("watching %q => %q", local, remote)}
-	check.E(writeResult(conn, &jr)).L("write response")
+	return fmt.Sprintf("watching %q => %q", local, remote), nil
 }
 
 func (dm *Daemon) watchDir(local, remote string) error {
@@ -194,6 +188,16 @@ func (dm *Daemon) watchDir(local, remote string) error {
 	dm.watchedDirs[local] = remote
 	dm.syncDir(local)
 	return nil
+}
+
+func (dm *Daemon) doRemove(local string) (string, error) {
+	remote, ok := dm.watchedDirs[local]
+	if !ok {
+		return "", fmt.Errorf("dir:%q not found", local)
+	}
+	check.E(dm.watcher.Remove(local)).F("remove dir from watcher", "local", local)
+	delete(dm.watchedDirs, local)
+	return fmt.Sprintf("removed %q => %q", local, remote), nil
 }
 
 func (dm *Daemon) WatchLoop() {
