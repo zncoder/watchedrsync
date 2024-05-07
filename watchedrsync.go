@@ -50,37 +50,42 @@ func (Op) SD_StartDaemon() {
 	dm.RequestLoop(lr)
 }
 
-type WatchedDir struct {
+type WatchDirArg struct {
 	LocalDir  string // dir/
 	RemoteDir string // host:dir/
 }
 
-func (wd *WatchedDir) Validate() error {
-	if !filepath.IsAbs(wd.LocalDir) {
-		return fmt.Errorf("localdir:%q is not abs", wd.LocalDir)
+func validateWatchDir(arg *WatchDirArg) (local, remote string, err error) {
+	local, remote = arg.LocalDir, arg.RemoteDir
+	if !filepath.IsAbs(local) {
+		return "", "", fmt.Errorf("localdir:%q is not abs", local)
 	}
-	dir, err := filepath.Abs(wd.LocalDir)
+	local, err = filepath.Abs(local)
 	if err != nil {
-		return fmt.Errorf("abs localdir:%q err:%w", wd.LocalDir, err)
+		return "", "", fmt.Errorf("abs localdir:%q err:%w", local, err)
 	}
-	wd.LocalDir = dir + "/"
-	if !mygo.IsDir(wd.LocalDir) {
-		return fmt.Errorf("localdir:%q is not a dir", wd.LocalDir)
+	local += "/"
+	if !mygo.IsDir(local) {
+		return "", "", fmt.Errorf("localdir:%q is not a dir", local)
 	}
-	wd.RemoteDir = filepath.Clean(wd.RemoteDir) + "/"
-	return nil
+	remote = filepath.Clean(remote) + "/"
+	return local, remote, nil
 }
 
-func readArg(r io.Reader, arg any, buf []byte) error {
+func readArg[T any](r io.Reader, buf []byte) (*T, error) {
+	if buf == nil {
+		buf = make([]byte, 64*1024)
+	}
+	var arg T
 	n, err := r.Read(buf)
 	if err != nil {
-		return fmt.Errorf("read arg:%T err:%w", arg, err)
+		return nil, fmt.Errorf("read arg:%T err:%w", &arg, err)
 	}
-	err = json.Unmarshal(buf[:n], arg)
+	err = json.Unmarshal(buf[:n], &arg)
 	if err != nil {
-		return fmt.Errorf("unmarshal arg:%T err:%w", arg, err)
+		return nil, fmt.Errorf("unmarshal arg:%T err:%w", &arg, err)
 	}
-	return nil
+	return &arg, nil
 }
 
 func writeResult(w io.Writer, result any) error {
@@ -95,20 +100,18 @@ func (Op) Add() {
 	mygo.ParseFlag("local remote")
 	check.T(flag.NArg() == 2).F("need local and remote dir")
 	ld := check.V(filepath.Abs(flag.Arg(0))).F("abs", "local", flag.Arg(0))
-	wd := WatchedDir{LocalDir: ld, RemoteDir: flag.Arg(1)}
+	wd := WatchDirArg{LocalDir: ld, RemoteDir: flag.Arg(1)}
 
 	conn := check.V(net.Dial("unix", *sockAddr)).F("dial", "sock", *sockAddr)
 	defer conn.Close()
 
 	check.E(writeResult(conn, wd)).F("write request", "wd", wd)
-	var jr JsonResponse
-	check.E(readArg(conn, &jr, make([]byte, 1024*1024))).F("read response")
+	jr := check.V(readArg[JsonResponse](conn, nil)).F("read response")
 	check.T(jr.Err == "").F("add failed", "err", jr.Err)
 	check.L(jr.Ok)
 }
 
 func (Op) RM_Remove() {
-
 }
 
 func main() {
@@ -156,19 +159,20 @@ func (dm *Daemon) handleConn(conn net.Conn, buf []byte) {
 		}
 	}()
 
-	var wd WatchedDir
-	if err = readArg(conn, &wd, buf); err != nil {
-		return
-	}
-	if err = wd.Validate(); err != nil {
-		return
-	}
-
-	err = dm.watchDir(wd.LocalDir, wd.RemoteDir)
+	wd, err := readArg[WatchDirArg](conn, buf)
 	if err != nil {
 		return
 	}
-	jr := JsonResponse{Ok: fmt.Sprintf("watching %q => %q", wd.LocalDir, wd.RemoteDir)}
+	local, remote, err := validateWatchDir(wd)
+	if err != nil {
+		return
+	}
+
+	err = dm.watchDir(local, remote)
+	if err != nil {
+		return
+	}
+	jr := JsonResponse{Ok: fmt.Sprintf("watching %q => %q", local, remote)}
 	check.E(writeResult(conn, &jr)).L("write response")
 }
 
@@ -259,8 +263,6 @@ func (dm *Daemon) processEvents(evs []fsnotify.Event) {
 	for _, fts := range dm.filesToSyncMap {
 		filesToSync = append(filesToSync, fts)
 	}
-	// no need to sort
-	slices.SortFunc(filesToSync, func(a, b *FileToSync) int { return a.Order - b.Order })
 
 	check.L("processevents", "num_events", len(evs), "num_files", len(filesToSync))
 
