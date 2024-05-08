@@ -102,9 +102,14 @@ func (Op) RM_Remove() {
 	call(&JsonArg{RemoveDir: ld})
 }
 
-func (Op) List() {
+func (Op) LS_List() {
 	mygo.ParseFlag()
 	call(&JsonArg{ListWatched: true})
+}
+
+func (Op) QuitQuitQuit() {
+	mygo.ParseFlag()
+	call(&JsonArg{QuitQuitQuit: true})
 }
 
 func main() {
@@ -125,11 +130,12 @@ type Daemon struct {
 	guessText          bool
 	parallel           int
 	eventDelayDuration time.Duration
+	quitting           bool
 }
 
 func (dm *Daemon) RequestLoop(lr net.Listener) {
 	buf := make([]byte, 1024*1024)
-	for {
+	for !dm.quitting {
 		if conn, ok := check.V(lr.Accept()).L("accept"); ok {
 			dm.handleConn(conn, buf)
 		}
@@ -137,9 +143,10 @@ func (dm *Daemon) RequestLoop(lr net.Listener) {
 }
 
 type JsonArg struct {
-	WatchDir    *WatchDirArg `json:"watchdir",omitempty`
-	RemoveDir   string       `json:"removedir",omitempty`
-	ListWatched bool         `json:"listwatched",omitempty`
+	WatchDir     *WatchDirArg `json:"watchdir",omitempty`
+	RemoveDir    string       `json:"removedir",omitempty`
+	ListWatched  bool         `json:"listwatched",omitempty`
+	QuitQuitQuit bool         `json:"quitquitquit",omitempty`
 }
 
 type JsonResult struct {
@@ -172,6 +179,10 @@ func (dm *Daemon) handleConn(conn net.Conn, buf []byte) {
 	}
 	if ja.ListWatched {
 		ok, err = dm.doList()
+	}
+	if ja.QuitQuitQuit {
+		dm.quitting = true
+		ok = "quitting"
 	}
 }
 
