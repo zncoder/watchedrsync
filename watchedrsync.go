@@ -93,13 +93,18 @@ func call(arg *JsonArg) {
 	var jr JsonResult
 	check.E(json.NewDecoder(conn).Decode(&jr)).F("read response")
 	check.T(jr.Err == "").F("call failed", "err", jr.Err, "arg", arg)
-	check.L(jr.Ok)
+	fmt.Println(jr.Ok)
 }
 
 func (Op) RM_Remove() {
 	mygo.ParseFlag("local")
 	ld := check.V(filepath.Abs(flag.Arg(0))).F("abs", "local", flag.Arg(0))
 	call(&JsonArg{RemoveDir: ld})
+}
+
+func (Op) List() {
+	mygo.ParseFlag()
+	call(&JsonArg{ListWatched: true})
 }
 
 func main() {
@@ -132,8 +137,9 @@ func (dm *Daemon) RequestLoop(lr net.Listener) {
 }
 
 type JsonArg struct {
-	WatchDir  *WatchDirArg `json:"watchdir",omitempty`
-	RemoveDir string       `json:"removedir",omitempty`
+	WatchDir    *WatchDirArg `json:"watchdir",omitempty`
+	RemoveDir   string       `json:"removedir",omitempty`
+	ListWatched bool         `json:"listwatched",omitempty`
 }
 
 type JsonResult struct {
@@ -163,6 +169,9 @@ func (dm *Daemon) handleConn(conn net.Conn, buf []byte) {
 	}
 	if ja.RemoveDir != "" {
 		ok, err = dm.doRemove(ja.RemoveDir)
+	}
+	if ja.ListWatched {
+		ok, err = dm.doList()
 	}
 }
 
@@ -210,6 +219,14 @@ func (dm *Daemon) doRemove(local string) (string, error) {
 	check.E(dm.watcher.Remove(local)).F("remove dir from watcher", "local", local)
 	delete(dm.watchedDirs, local)
 	return fmt.Sprintf("removed %q => %q", local, remote), nil
+}
+
+func (dm *Daemon) doList() (string, error) {
+	var sb strings.Builder
+	for local, remote := range dm.watchedDirs {
+		fmt.Fprintf(&sb, "%q => %q\n", local, remote)
+	}
+	return sb.String(), nil
 }
 
 func (dm *Daemon) WatchLoop() {
