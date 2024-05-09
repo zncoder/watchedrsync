@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -305,7 +304,7 @@ func (dm *Daemon) processEvents(evs []fsnotify.Event) {
 	// only the last event matters
 	// keep the event order
 	for i, ev := range evs {
-		if dm.ignoreFile(ev.Name) {
+		if mygo.IgnoreFile(ev.Name) {
 			if *verbose {
 				check.L("ignore", "file", ev.Name)
 			}
@@ -364,25 +363,6 @@ func (dm *Daemon) processFiles(filesToSync []*FileToSync) error {
 	default:
 		return nil
 	}
-}
-
-var ignoredExts = []string{".o", ".so", ".exe", ".dylib", ".test", ".out"}
-
-func (dm *Daemon) ignoreFile(filename string) bool {
-	if strings.Contains(filename, "/.") || strings.HasSuffix(filename, "~") {
-		return true
-	}
-	ext := strings.ToLower(filepath.Ext(filename))
-	if slices.Contains(ignoredExts, ext) {
-		return true
-	}
-	if mode := mygo.FileMode(filename); mode&(os.ModeDir|os.ModeSymlink) != 0 {
-		return true
-	}
-	if dm.guessText && !mygo.GuessUTF8File(filename) {
-		return true
-	}
-	return false
 }
 
 func rsyncFile(src, dst string) error {
