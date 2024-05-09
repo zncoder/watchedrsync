@@ -75,12 +75,26 @@ func validateWatchDir(arg *WatchDirArg) (local, remote string, err error) {
 	if err != nil {
 		return "", "", err
 	}
+
+	remote = filepath.Clean(remote)
+	ss := strings.Split(remote, ":")
+	if len(ss) != 2 || ss[0] == "" || ss[1] == "" {
+		return "", "", fmt.Errorf("remote dir must be host:dir")
+	}
+	if ss[1] == "-" {
+		home := check.V(os.UserHomeDir()).F("no userhomedir") + "/"
+		if strings.HasPrefix(local, home) {
+			remote = ss[0] + ":" + strings.TrimPrefix(local, home)
+		} else {
+			remote = ss[0] + ":" + local
+		}
+	}
 	remote = filepath.Clean(remote) + "/"
 	return local, remote, nil
 }
 
 func (Op) Add() {
-	mygo.ParseFlag("local remote")
+	mygo.ParseFlag("local remotehost:remotedir_or_-")
 	ld := check.V(filepath.Abs(flag.Arg(0))).F("abs", "local", flag.Arg(0))
 	call(&JsonArg{WatchDir: &WatchDirArg{LocalDir: ld, RemoteDir: flag.Arg(1)}})
 }
