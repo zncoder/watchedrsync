@@ -19,13 +19,14 @@ import (
 )
 
 var (
-	sockAddr = flag.String("s", os.ExpandEnv("$HOME/.cache/watchedrsync.sock"), "unix socket addr")
+	sockAddr = flag.String("s", mygo.HomeFile("~/.cache/watchedrsync.sock"), "unix socket addr")
 	verbose  = flag.Bool("v", true, "verbose")
 )
 
 type Op struct{}
 
 func (Op) SD_StartDaemon() {
+	watchedCache := flag.String("c", mygo.HomeFile("~/.cache/watchedrsync.cache"), "cache of watched dirs")
 	guessText := flag.Bool("t", false, "guess file content is text")
 	parallel := flag.Int("p", 10, "parallelism")
 	eventDelayDuration := flag.Duration("d", 2*time.Second, "delay to batch processing events")
@@ -38,12 +39,14 @@ func (Op) SD_StartDaemon() {
 
 	dm := &Daemon{
 		watchedDirs:        make(map[string]string),
+		cacheFile:          *watchedCache,
 		filesToSyncMap:     make(map[string]*FileToSync),
 		watcher:            check.V(fsnotify.NewBufferedWatcher(50)).F("NewWatcher"),
 		guessText:          *guessText,
 		parallel:           *parallel,
 		eventDelayDuration: *eventDelayDuration,
 	}
+
 	go dm.WatchLoop()
 	dm.RequestLoop(lr)
 }
@@ -137,6 +140,7 @@ func since(t time.Time) time.Duration {
 const interestingOps = fsnotify.Create | fsnotify.Write | fsnotify.Remove
 
 type Daemon struct {
+	cacheFile          string
 	filesToSyncMap     map[string]*FileToSync
 	watcher            *fsnotify.Watcher
 	guessText          bool
@@ -149,6 +153,10 @@ type Daemon struct {
 }
 
 func (dm *Daemon) RequestLoop(lr net.Listener) {
+	if dm.cacheFile != "" {
+		dm.loadWatchedDirs()
+	}
+
 	buf := make([]byte, 1024*1024)
 	for !dm.quitting {
 		if conn, ok := check.V(lr.Accept()).L("accept"); ok {
@@ -192,9 +200,15 @@ func (dm *Daemon) handleConn(conn net.Conn, buf []byte) {
 
 	if ja.WatchDir != nil {
 		ok, err = dm.doWatch(ja.WatchDir)
+		if err == nil && dm.cacheFile != "" {
+			dm.saveWatchedDirs()
+		}
 	}
 	if ja.RemoveDir != "" {
 		ok, err = dm.doRemove(ja.RemoveDir)
+		if err == nil && dm.cacheFile != "" {
+			dm.saveWatchedDirs()
+		}
 	}
 	if ja.ListWatched {
 		ok, err = dm.doList()
@@ -203,6 +217,33 @@ func (dm *Daemon) handleConn(conn net.Conn, buf []byte) {
 		dm.quitting = true
 		ok = "quitting"
 	}
+}
+
+func (dm *Daemon) loadWatchedDirs() {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	if !mygo.FileExist(dm.cacheFile) {
+		dm.saveWatchedDirs()
+		return
+	}
+
+	b := check.V(os.ReadFile(dm.cacheFile)).F("read cache", "file", dm.cacheFile)
+	var watchedDirs map[string]string
+	check.E(json.Unmarshal(b, &watchedDirs)).F("decode watcheddirs", "file", dm.cacheFile)
+
+	for local, remote := range watchedDirs {
+		if check.E(dm.watchDir(local, remote)).L("drop from cache", "local", local, "remote", remote) {
+			dm.watchedDirs[local] = remote
+		}
+	}
+
+	dm.saveWatchedDirs()
+}
+
+func (dm *Daemon) saveWatchedDirs() {
+	b := check.V(json.Marshal(dm.watchedDirs)).F("encode watcheddirs")
+	check.E(os.WriteFile(dm.cacheFile, b, 0600)).F("write watcheddirs", "file", dm.cacheFile)
 }
 
 func (dm *Daemon) doWatch(wd *WatchDirArg) (string, error) {
