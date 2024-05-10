@@ -109,7 +109,7 @@ func call(arg *JsonArg) {
 	var jr JsonResult
 	check.E(json.NewDecoder(conn).Decode(&jr)).F("read response")
 	check.T(jr.Err == "").F("call failed", "err", jr.Err, "arg", arg)
-	fmt.Println(jr.Ok)
+	fmt.Println(strings.TrimSpace(jr.Ok))
 }
 
 func (Op) RM_Remove() {
