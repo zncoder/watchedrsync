@@ -300,7 +300,8 @@ func (dm *Daemon) collectEvents(ev fsnotify.Event) []fsnotify.Event {
 }
 
 type FileToSync struct {
-	name     string
+	local    string
+	remote   string
 	isRemove bool
 	err      error
 }
@@ -321,7 +322,7 @@ func (dm *Daemon) processEvents(evs []fsnotify.Event) {
 
 		isrm := (ev.Op & fsnotify.Remove) != 0
 		check.L("add", "file", ev.Name, "evop", ev.Op, "rm", isrm)
-		dm.filesToSyncMap[ev.Name] = &FileToSync{name: ev.Name, isRemove: isrm}
+		dm.filesToSyncMap[ev.Name] = &FileToSync{local: ev.Name, isRemove: isrm}
 	}
 
 	var filesToSync []*FileToSync
@@ -350,7 +351,7 @@ func (dm *Daemon) processFiles(filesToSync []*FileToSync) error {
 			defer done.Done()
 
 			for fts := range ch {
-				if err := dm.processFile(fts.name, fts.isRemove); err != nil {
+				if err := dm.processFile(fts.local, fts.isRemove); err != nil {
 					select {
 					case errCh <- err:
 					default:
