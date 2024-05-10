@@ -301,7 +301,6 @@ func (dm *Daemon) collectEvents(ev fsnotify.Event) []fsnotify.Event {
 
 type FileToSync struct {
 	name     string
-	order    int // TODO remove
 	isRemove bool
 	err      error
 }
@@ -312,8 +311,7 @@ func (dm *Daemon) processEvents(evs []fsnotify.Event) {
 
 	// filename => FileToSync
 	// only the last event matters
-	// keep the event order
-	for i, ev := range evs {
+	for _, ev := range evs {
 		if mygo.IgnoreFile(ev.Name) {
 			if *verbose {
 				check.L("ignore", "file", ev.Name)
@@ -323,7 +321,7 @@ func (dm *Daemon) processEvents(evs []fsnotify.Event) {
 
 		isrm := (ev.Op & fsnotify.Remove) != 0
 		check.L("add", "file", ev.Name, "evop", ev.Op, "rm", isrm)
-		dm.filesToSyncMap[ev.Name] = &FileToSync{name: ev.Name, order: i, isRemove: isrm}
+		dm.filesToSyncMap[ev.Name] = &FileToSync{name: ev.Name, isRemove: isrm}
 	}
 
 	var filesToSync []*FileToSync
