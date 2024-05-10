@@ -327,36 +327,40 @@ func (dm *Daemon) processEvents(evs []fsnotify.Event) {
 
 	var filesToSync []*FileToSync
 	for _, fts := range dm.filesToSyncMap {
-		filesToSync = append(filesToSync, fts)
+		if remote, ok := check.V(dm.getRemote(fts.local)).L("ignore file with no remote", "local", fts.local); ok {
+			fts.remote = remote
+			filesToSync = append(filesToSync, fts)
+		}
 	}
 
 	check.L("processevents", "num_events", len(evs), "num_files", len(filesToSync))
 
-	if err := dm.processFiles(filesToSync); err != nil {
-		check.L("processfiles failed", "err", err)
-		return
+	dm.processFiles(filesToSync)
+	for _, fts := range filesToSync {
+		if fts.err != nil {
+			if fts.isRemove {
+				check.L("remove file failed", "local", fts.local, "remote", fts.remote, "err", fts.err)
+			} else {
+				check.L("sync file failed", "local", fts.local, "remote", fts.remote, "err", fts.err)
+			}
+		} else {
+			delete(dm.filesToSyncMap, fts.local)
+		}
 	}
-	dm.filesToSyncMap = make(map[string]*FileToSync)
 }
 
 // TODO: return failed files to not retry successful files
-func (dm *Daemon) processFiles(filesToSync []*FileToSync) error {
+func (dm *Daemon) processFiles(filesToSync []*FileToSync) {
 	var done sync.WaitGroup
 	done.Add(dm.parallel)
 
-	errCh := make(chan error, 1)
 	ch := make(chan *FileToSync, dm.parallel)
 	for i := 0; i < dm.parallel; i++ {
 		go func() {
 			defer done.Done()
 
 			for fts := range ch {
-				if err := dm.processFile(fts.local, fts.isRemove); err != nil {
-					select {
-					case errCh <- err:
-					default:
-					}
-				}
+				fts.err = dm.processFile(fts.local, fts.remote, fts.isRemove)
 			}
 		}()
 	}
@@ -366,13 +370,6 @@ func (dm *Daemon) processFiles(filesToSync []*FileToSync) error {
 	}
 	close(ch)
 	done.Wait()
-
-	select {
-	case err := <-errCh:
-		return err
-	default:
-		return nil
-	}
 }
 
 func rsyncFile(src, dst string) error {
@@ -380,28 +377,35 @@ func rsyncFile(src, dst string) error {
 	return mygo.NewCmd("rsync", "-t", "-e", "ssh", src, dst).C.Run()
 }
 
-func (dm *Daemon) syncDir(local string) {
-	remote := dm.watchedDirs[local]
-	check.T(remote != "").F("no remote dir", "local", local)
+func (dm *Daemon) syncDir(localDir string) {
+	remote := dm.watchedDirs[localDir]
+	check.T(remote != "").F("no remote dir", "local", localDir)
 
-	localfs := os.DirFS(local)
-	des := check.V(fs.ReadDir(localfs, ".")).F("readdir", "dir", local)
+	localFS := os.DirFS(localDir)
+	des := check.V(fs.ReadDir(localFS, ".")).F("readdir", "dir", localDir)
 	for _, de := range des {
 		if de.Type().IsRegular() {
-			check.E(dm.processFile(filepath.Join(local, de.Name()), false)).F("syncdir", "local", local, "file", de.Name())
+			local := filepath.Join(localDir, de.Name())
+			remote := check.V(dm.getRemote(local)).F("no remote", "local", local)
+			check.E(dm.processFile(local, remote, false)).F("syncdir", "local", local, "remote", remote)
 		}
 	}
 }
 
-func (dm *Daemon) processFile(filename string, isRemove bool) (err error) {
-	dir, p := filepath.Split(filename)
+func (dm *Daemon) getRemote(local string) (string, error) {
+	dir, p := filepath.Split(local)
 	remote := dm.watchedDirs[dir]
-	check.T(remote != "").F("remote dir gone", "dir", dir, "filename", p)
-	dst := fmt.Sprintf("%s%s", remote, p)
+	if remote == "" {
+		return "", fmt.Errorf("remote dir of not found")
+	}
+	return fmt.Sprintf("%s%s", remote, p), nil
+}
+
+func (dm *Daemon) processFile(local, remote string, isRemove bool) (err error) {
 	if isRemove {
-		rsyncRemoveFile(dst)
+		rsyncRemoveFile(remote)
 	} else {
-		err = rsyncFile(filename, dst)
+		err = rsyncFile(local, remote)
 	}
 	return err
 }
