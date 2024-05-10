@@ -137,13 +137,15 @@ func since(t time.Time) time.Duration {
 const interestingOps = fsnotify.Create | fsnotify.Write | fsnotify.Remove
 
 type Daemon struct {
-	watchedDirs        map[string]string
 	filesToSyncMap     map[string]*FileToSync
 	watcher            *fsnotify.Watcher
 	guessText          bool
 	parallel           int
 	eventDelayDuration time.Duration
-	quitting           bool
+
+	mu          sync.Mutex
+	watchedDirs map[string]string
+	quitting    bool
 }
 
 func (dm *Daemon) RequestLoop(lr net.Listener) {
@@ -184,6 +186,10 @@ func (dm *Daemon) handleConn(conn net.Conn, buf []byte) {
 	if err = json.NewDecoder(conn).Decode(&ja); err != nil {
 		return
 	}
+
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
 	if ja.WatchDir != nil {
 		ok, err = dm.doWatch(ja.WatchDir)
 	}
@@ -294,12 +300,16 @@ func (dm *Daemon) collectEvents(ev fsnotify.Event) []fsnotify.Event {
 }
 
 type FileToSync struct {
-	Name     string
-	Order    int
-	IsRemove bool
+	name     string
+	order    int // TODO remove
+	isRemove bool
+	err      error
 }
 
 func (dm *Daemon) processEvents(evs []fsnotify.Event) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
 	// filename => FileToSync
 	// only the last event matters
 	// keep the event order
@@ -313,7 +323,7 @@ func (dm *Daemon) processEvents(evs []fsnotify.Event) {
 
 		isrm := (ev.Op & fsnotify.Remove) != 0
 		check.L("add", "file", ev.Name, "evop", ev.Op, "rm", isrm)
-		dm.filesToSyncMap[ev.Name] = &FileToSync{Name: ev.Name, Order: i, IsRemove: isrm}
+		dm.filesToSyncMap[ev.Name] = &FileToSync{name: ev.Name, order: i, isRemove: isrm}
 	}
 
 	var filesToSync []*FileToSync
@@ -342,7 +352,7 @@ func (dm *Daemon) processFiles(filesToSync []*FileToSync) error {
 			defer done.Done()
 
 			for fts := range ch {
-				if err := dm.processFile(fts.Name, fts.IsRemove); err != nil {
+				if err := dm.processFile(fts.name, fts.isRemove); err != nil {
 					select {
 					case errCh <- err:
 					default:
@@ -387,7 +397,7 @@ func (dm *Daemon) syncDir(local string) {
 func (dm *Daemon) processFile(filename string, isRemove bool) (err error) {
 	dir, p := filepath.Split(filename)
 	remote := dm.watchedDirs[dir]
-	check.T(remote != "").F("no remote dir", "dir", dir, "filename", p)
+	check.T(remote != "").F("remote dir gone", "dir", dir, "filename", p)
 	dst := fmt.Sprintf("%s%s", remote, p)
 	if isRemove {
 		rsyncRemoveFile(dst)
