@@ -330,6 +330,7 @@ func (dm *Daemon) processEvents(evs []fsnotify.Event) {
 	dm.filesToSyncMap = make(map[string]*FileToSync)
 }
 
+// TODO: return failed files to not retry successful files
 func (dm *Daemon) processFiles(filesToSync []*FileToSync) error {
 	var done sync.WaitGroup
 	done.Add(dm.parallel)
@@ -389,21 +390,18 @@ func (dm *Daemon) processFile(filename string, isRemove bool) (err error) {
 	check.T(remote != "").F("no remote dir", "dir", dir, "filename", p)
 	dst := fmt.Sprintf("%s%s", remote, p)
 	if isRemove {
-		err = rsyncRemoveFile(dst)
+		rsyncRemoveFile(dst)
 	} else {
 		err = rsyncFile(filename, dst)
 	}
 	return err
 }
 
-func rsyncRemoveFile(rsyncFilename string) error {
+func rsyncRemoveFile(rsyncFilename string) {
 	ss := strings.SplitN(rsyncFilename, ":", 2)
 	check.T(len(ss) == 2).F("malformed rsync filename to remove", "file", rsyncFilename)
 	check.L("ssh rm", "host", ss[0], "file", ss[1])
-	if err := mygo.NewCmd("ssh", ss[0], "rm", ss[1]).C.Run(); err != nil {
-		return fmt.Errorf("ssh rm %q failed err:%w", rsyncFilename, err)
-	}
-	return nil
+	check.E(mygo.NewCmd("ssh", ss[0], "rm", ss[1]).C.Run()).L("rm", "host", ss[0], "file", ss[1])
 }
 
 func rsyncMkdir(remote string) error {
