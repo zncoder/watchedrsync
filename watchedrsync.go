@@ -279,10 +279,6 @@ func (dm *Daemon) watchDir(local, remote string) error {
 }
 
 func (dm *Daemon) doRemove(local string) (string, error) {
-	local, err := validateLocalDir(local)
-	if err != nil {
-		return "", err
-	}
 	remote, ok := dm.watchedDirs[local]
 	if !ok {
 		return "", fmt.Errorf("dir:%q not found", local)
