@@ -233,9 +233,11 @@ func (dm *Daemon) loadWatchedDirs() {
 	check.E(json.Unmarshal(b, &watchedDirs)).F("decode watcheddirs", "file", dm.cacheFile)
 
 	for local, remote := range watchedDirs {
-		if check.E(dm.watchDir(local, remote)).L("drop from cache", "local", local, "remote", remote) {
-			dm.watchedDirs[local] = remote
+		if _, err := validateLocalDir(local); err != nil {
+			check.L("drop from cache", "local", local, "remote", remote, "err", err)
+			continue
 		}
+		check.E(dm.watchDir(local, remote)).F("watch cached", "local", local, "remote", remote)
 	}
 
 	dm.saveWatchedDirs()
