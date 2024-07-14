@@ -117,8 +117,7 @@ func call(arg *JsonArg) {
 
 func (Op) RM_Remove() {
 	mygo.ParseFlag("local")
-	ld := check.V(filepath.Abs(flag.Arg(0))).F("abs", "local", flag.Arg(0))
-	call(&JsonArg{RemoveDir: ld})
+	call(&JsonArg{RemoveDir: flag.Arg(0)})
 }
 
 func (Op) LS_List() {
@@ -290,8 +289,28 @@ func (dm *Daemon) watchDir(local, remote string) error {
 	return nil
 }
 
-func (dm *Daemon) doRemove(local string) (string, error) {
-	local, _ = validateLocalDir(local, false)
+func (dm *Daemon) matchLocal(localPat string) (string, error) {
+	var matches []string
+	for local := range dm.watchedDirs {
+		if local == localPat {
+			return local, nil
+		}
+		if strings.Contains(local, localPat) {
+			matches = append(matches, local)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	return "", fmt.Errorf("matches:%v for localpat:%s", matches, localPat)
+}
+
+func (dm *Daemon) doRemove(localPat string) (string, error) {
+	local, err := dm.matchLocal(localPat)
+	if err != nil {
+		return "", err
+	}
+
 	remote, ok := dm.watchedDirs[local]
 	if !ok {
 		return "", fmt.Errorf("dir:%q not found", local)
