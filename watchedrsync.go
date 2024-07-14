@@ -56,7 +56,7 @@ type WatchDirArg struct {
 	RemoteDir string // host:dir/
 }
 
-func validateLocalDir(local string) (string, error) {
+func validateLocalDir(local string, exist bool) (string, error) {
 	if !filepath.IsAbs(local) {
 		return "", fmt.Errorf("localdir:%q is not abs", local)
 	}
@@ -65,7 +65,7 @@ func validateLocalDir(local string) (string, error) {
 		return "", fmt.Errorf("abs localdir:%q err:%w", local, err)
 	}
 	local += "/"
-	if !mygo.IsDir(local) {
+	if exist && !mygo.IsDir(local) {
 		return "", fmt.Errorf("localdir:%q is not a dir", local)
 	}
 	return local, nil
@@ -73,7 +73,7 @@ func validateLocalDir(local string) (string, error) {
 
 func validateWatchDir(arg *WatchDirArg) (local, remote string, err error) {
 	local, remote = arg.LocalDir, arg.RemoteDir
-	local, err = validateLocalDir(local)
+	local, err = validateLocalDir(local, true)
 	if err != nil {
 		return "", "", err
 	}
@@ -98,6 +98,9 @@ func validateWatchDir(arg *WatchDirArg) (local, remote string, err error) {
 func (Op) Add() {
 	mygo.ParseFlag("local remotehost:remotedir_or_-")
 	ld := check.V(filepath.Abs(flag.Arg(0))).F("abs", "local", flag.Arg(0))
+	if !mygo.IsDir(ld) {
+		ld = filepath.Dir(ld)
+	}
 	call(&JsonArg{WatchDir: &WatchDirArg{LocalDir: ld, RemoteDir: flag.Arg(1)}})
 }
 
@@ -203,19 +206,26 @@ func (dm *Daemon) handleConn(conn net.Conn, buf []byte) {
 		if err == nil && dm.cacheFile != "" {
 			dm.saveWatchedDirs()
 		}
+		return
 	}
+
 	if ja.RemoveDir != "" {
 		ok, err = dm.doRemove(ja.RemoveDir)
 		if err == nil && dm.cacheFile != "" {
 			dm.saveWatchedDirs()
 		}
+		return
 	}
+
 	if ja.ListWatched {
 		ok, err = dm.doList()
+		return
 	}
+
 	if ja.QuitQuitQuit {
 		dm.quitting = true
 		ok = "quitting"
+		return
 	}
 }
 
@@ -233,7 +243,7 @@ func (dm *Daemon) loadWatchedDirs() {
 	check.E(json.Unmarshal(b, &watchedDirs)).F("decode watcheddirs", "file", dm.cacheFile)
 
 	for local, remote := range watchedDirs {
-		if _, err := validateLocalDir(local); err != nil {
+		if _, err := validateLocalDir(local, true); err != nil {
 			check.L("drop from cache", "local", local, "remote", remote, "err", err)
 			continue
 		}
@@ -281,6 +291,7 @@ func (dm *Daemon) watchDir(local, remote string) error {
 }
 
 func (dm *Daemon) doRemove(local string) (string, error) {
+	local, _ = validateLocalDir(local, false)
 	remote, ok := dm.watchedDirs[local]
 	if !ok {
 		return "", fmt.Errorf("dir:%q not found", local)
@@ -416,19 +427,29 @@ func rsyncFile(src, dst string) error {
 	return mygo.NewCmd("rsync", "-t", "-e", "ssh", src, dst).C.Run()
 }
 
+func rsyncNFiles(src, dst string, files []string) error {
+	check.L("rsync", "src", src, "dst", dst, "files", files)
+	cmd := mygo.NewCmd("rsync", "-t", "-e", "ssh", "--files-from=-", src, dst)
+	cmd.C.Stdin = strings.NewReader(strings.Join(files, "\n"))
+	return cmd.C.Run()
+}
+
 func (dm *Daemon) syncDir(localDir string) {
 	remote := dm.watchedDirs[localDir]
 	check.T(remote != "").F("no remote dir", "local", localDir)
 
 	localFS := os.DirFS(localDir)
+	var files []string
 	des := check.V(fs.ReadDir(localFS, ".")).F("readdir", "dir", localDir)
 	for _, de := range des {
 		if de.Type().IsRegular() {
-			local := filepath.Join(localDir, de.Name())
-			remote := check.V(dm.getRemote(local)).F("no remote", "local", local)
-			check.E(dm.processFile(local, remote, false)).F("syncdir", "local", local, "remote", remote)
+			files = append(files, de.Name())
 		}
 	}
+	if len(files) == 0 {
+		return
+	}
+	check.E(rsyncNFiles(localDir, remote, files)).F("syncdir", "local", localDir, "remote", remote, "files", files)
 }
 
 func (dm *Daemon) getRemote(local string) (string, error) {
